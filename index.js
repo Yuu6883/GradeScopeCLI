@@ -3,21 +3,21 @@ const qs = require("querystring");
 const chalk = require("chalk").default;
 const Cookie = require("cookie");
 const logger = require("./logger");
-const readline = require('readline');
-const pp = require("password-prompt");
+const term = require( 'terminal-kit' ).terminal;
+
 const { createGunzip } = require("zlib");
+const inquirer = require("inquirer");
 
 const { JSDOM } = require("jsdom");
 const { window } = new JSDOM();
 const { document } = window;
 
 global.document = document;
+/** @type {JQueryStatic} */
 const $ = require("jquery")(window);
 
 const fs = require("fs");
 
-/** @type {import("readline").Interface} */
-let rl;
 let session;
 let token;
 let rememberMe;
@@ -34,8 +34,21 @@ let color = msg => [chalk.blue, chalk.blueBright, chalk.cyan, chalk.cyanBright,
                     chalk.green, chalk.greenBright, chalk.yellow, 
                     chalk.yellowBright, chalk.red, chalk.redBright, 
                     chalk.magenta, chalk.magentaBright][++index % 12](msg);
-/** @type {{term:String,hw:String,name:String,fullName:String,path:String}[]} */
+
+/** @typedef {{term:String,hw:String,name:String,fullName:String,path:String}} Course */
+/** @typedef {{name:String,score:String,status:String,release:Date,due:Date,lateDue:Date}} Homework */
+
+/** @type {Course[]} */
 let courses = [];
+/** @type {Course[]} */
+let termCourses = [];
+/** @type {Course} */
+let currentCourse;
+let currentTerm = "";
+/** @type {Homework[]} */
+let homeworkList = [];
+
+const getTerms = () => [...new Set(courses.map(c => c.term))];
 
 const rainbowDots = newline => (dot = setTimeout(() => {
     newline && process.stdout.write("\n");
@@ -44,6 +57,7 @@ const rainbowDots = newline => (dot = setTimeout(() => {
 }, 50));
 
 const clearRainbow = newline => {
+    console.clear();
     if (dot) {
         newline && process.stdout.write("\n");
         clearTimeout(dot);
@@ -164,33 +178,34 @@ const APICall = (path, method, form) => new Promise((resolve, reject) => {
     req.end();
 });
 
-const createRL = () => {
-    rl && rl.close();
-    rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
-    });
-    rl.on("SIGINT", quit);
-}
-
-const closeRL = () => rl && rl.close();
-
-const ask = msg => new Promise(resolve => {
-    if (!rl) createRL();
-    rl.question(msg, resolve);
-});
-
 const loginWithCredentials = async() => {
 
-    createRL();
-    let email = await ask("> Enter Email: ");
-    closeRL();
+    let result = await inquirer.prompt([{
+        type: "input",
+        name: "email",
+        message: "Enter Email: ",
+        prefix: ""
+    },{
+        type: "password",
+        name: "password",
+        mask: "*",
+        message: "Enter Password: ",
+        prefix: "",
+        validate: string => {
+            if (!string) return "Password should not be empty";
+            return true;
+        }
+    }, {
+        type: "list",
+        name: "rememberMe",
+        message: "Remember Me",
+        prefix: "",
+        choices: ["yes", "no"],
+        filter: input => input === "yes"
+    }]);
 
-    let password = await pp("> Enter Password: ", { method: "hide" }).catch(quit);
-    
-    createRL();
-    rememberMe = await ask("> Remember Me (yes/no): ");
-    rememberMe = rememberMe.toLowerCase().trim() === "yes";
+    let { email, password } = result;
+    rememberMe = result.rememberMe;
 
     let CRSFToken = await getCRSFToken().catch(e => crash(e));
     logger.log(`Firewall is 50% down`);
@@ -218,24 +233,24 @@ const loginWithCredentials = async() => {
         rememberMe && saveToken(t);
         return t;
     } else {
-        logger.warn("You probably left some hacking record last time." + 
-                    " FBI is looking for you.");
+        crash("No Token Received");
     }
 };
 
 const updateCourses = async () => {
-    logger.log("Fetching Course Data");
+    logger.log("Fetching Courses");
     rainbowDots();
     let { res, body } = await APICall();
     clearRainbow(true);
         
     if (res.statusCode !== 200) {
-        crash(new Error(`Failed to Fetch Course Data: Status[` + 
+        crash(new Error(`Failed to Fetch Courses: Status[` + 
                 `${res.statusCode}]:${res.statusMessage}`));
     } else if (!body) {
-        // fs.unlinkSync(__dirname + "/token.txt");
-        logger.log("length" + res.headers["content-length"]);
+        
+        // logger.log("length" + res.headers["content-length"]);
         // console.log(res.headers["set-cookie"]);
+
         logger.log("Failed to Fetch Course Data: it looks like" + 
         " Berkeley detected last backdoor, need to log-in again.");
         return true;
@@ -256,7 +271,9 @@ const updateCourses = async () => {
         let info = {};
         if (infoMatch && infoMatch[0]) {
             try {
-                eval("info = " + infoMatch[0].slice(14));
+                info = JSON.parse(infoMatch[0].slice(14)
+                                            .replace("name", "\"name\"")
+                                            .replace("email", "\"email\""));
             } catch (e) { logger.error(e) }
         }
         if (info.name) {
@@ -268,13 +285,269 @@ const updateCourses = async () => {
     }
 };
 
-const formatTerm = term => term.split(" ")[0].toUpperCase().slice(0, 2) + 
-                            term.split(" ")[1].slice(-2);
+const MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+const MONTH_REGEX = /^[A-Z]{3} \d{2}$/i;
+const TIME_REGEX = /[A-Z]{3} \d{2} AT ( |\d)\d:\d{2}(A|P)M$/i;
 
-const listCourses = () => {
-    for (let course of courses) {
-        console.log(`${formatTerm(course.term)} ${course.name}`);
+const parseDue = (year, due) => {
+    let string = TIME_REGEX.exec(due)[0];
+    let month = MONTHS.indexOf(string.slice(0, 3).toUpperCase());
+    let date = ~~string.slice(4, 6);
+    let hours = ~~string.slice(-7, -5) + 
+                 (string.slice(-2, -1) === "P" ? 12 : 0);
+    let minutes = ~~string.slice(-4, -2);
+    return new Date(year, month, date, hours, minutes);
+}
+
+/** @param {Course} course */
+const fetchCourse = async course => {
+
+    currentCourse = course;
+
+    let year = ~~(/20\d{2}/.exec(course.term)[0]);
+    if (!year) year = new Date().getFullYear();
+
+    logger.log(`Fetching ${course.name} Course Data`);
+    rainbowDots();
+    let { res, body } = await APICall(course.path);
+    clearRainbow(true);
+
+    if (res.statusCode !== 200) {
+        crash(new Error(`Failed to Fetch Courses: Status[` + 
+                `${res.statusCode}]:${res.statusMessage}`));
+    } else if (!body) {
+
+        logger.error("Failed to Fetch Course Data");
+        return false;
+        
+    } else {
+
+        $(body).find("tbody").children().each(function() {
+
+            let [name, score, status, release, due, lateDue] = 
+                $(this).children().map(function(index) {
+                    if (!index) return this.textContent.trim();
+                    else if (index === 1) {
+
+                        let score = $(this).find(".submissionStatus--score").text();
+                            return [score.replace(/\s/g, ""), 
+                                    $(this).text().replace(score, "")];
+
+                    } else {
+                        return [$(this).find(".submissionTimeChart--releaseDate").text(),
+                             ...$(this).find(".submissionTimeChart--dueDate")
+                                       .map(function() { return this.textContent })];
+                    }
+                });
+
+            if (!MONTH_REGEX.test(release)) release = null;
+            else {
+                try {
+
+                    let month = MONTHS.indexOf(release.split(" ")[0].toUpperCase());
+                    let date = ~~release.split(" ")[1];
+                    release = new Date(year, month, date);
+
+                } catch (_) { 
+                    logger.error(`Failed to parse release date: ${release}`);
+                    release = null;
+                }
+            }
+            
+            if (!TIME_REGEX.test(due)) due = null;
+            else {
+                try {
+                    due = parseDue(year, due);
+                } catch (_) {
+                    logger.error(`Failed to parse due date: ${due}`);
+                    due = null;
+                }
+            }
+
+            if (!TIME_REGEX.test(lateDue)) lateDue = null;
+            else {
+                try {
+                    lateDue = parseDue(year, lateDue);
+                } catch (_) {
+                    logger.error(`Failed to parse late due date: ${lateDue}`);
+                    lateDue = null;
+                }
+            }
+            
+            homeworkList.push({ name, score, status, release, due, lateDue });
+        });
+
+        homeworkList.sort((a, b) => (b.due || 0) - (a.due || 0));
+
+        return true;
     }
+}
+const SEP = () => new inquirer.Separator(chalk.blueBright("━━━━━━━━━━━━━━━━━━━━━━━"));
+const BACK_SEP = () => [SEP(), "Back", SEP()];
+/** @type {"start"|"term"|"course"|"hwlist"|"menu"|"hw"} */
+let currentLevel = "start";
+const promptAction = async () => {
+
+    let choices = ["Quit"], message = "";
+
+    switch (currentLevel) {
+
+        case "menu":
+            choices = ["View Courses", SEP(), "Log Out", "Quit"];
+            message = "Menu";
+            break;
+
+        case "start":
+            choices = ["Log In", "Quit"];
+            message = "Menu";
+            break;
+
+        case "term":
+            choices = [SEP(), ...getTerms(), ...BACK_SEP()];
+            message = "Choose a Term: ";
+            break;
+
+        case "course":
+            choices = [SEP(), ...termCourses.map(c => c.name), ...BACK_SEP()];
+            message = `${currentTerm} Courses: `;
+            break;
+
+        case "hwlist":
+            choices = homeworkList.map(h => ({ name: formatHwAsRow(h), 
+                                                value: h }))
+                                .concat(BACK_SEP());
+
+            message = `${currentCourse.name}: ${currentCourse.fullName}`;
+            break;         
+    }
+
+    let { result } = await inquirer.prompt({
+        type: "list",
+        name: "result",
+        message,
+        choices,
+        prefix: ""
+    });
+
+    if (currentLevel !== "start") console.clear();
+
+    switch (result) {
+
+        case "Log In":
+            await login();
+            break;
+
+        case "Log Out":
+            await logout();
+            break;
+
+        case "Quit":
+            await quit();
+            break;
+        
+        case "View Courses":
+            currentLevel = "term";
+            break;
+
+        case "Back":
+            if (currentLevel === "term") {
+                currentLevel = "menu";
+            } else if (currentLevel === "course") {
+                termCourses = [];
+                currentLevel = "term";
+            } else if (currentLevel === "hwlist") {
+                currentCourse = null;
+                homework = [];
+                currentLevel = "course";
+            }
+            break;
+
+        default:
+            if (currentLevel === "term") {
+                termCourses = courses.filter(c => c.term == result);
+                currentLevel = "course";
+                currentTerm = result;
+            } else if (currentLevel === "course") {
+                let course = courses.find(c => c.name == result);
+                if (!course) {
+                    crash(`Can't find course ${result}`);
+                } else {
+                    let success = await fetchCourse(course);
+                    if (success) currentLevel = "hwlist";
+                }
+            } else if (currentLevel === "hwlist") {
+                
+            }
+    }
+}
+
+const fillString = (s, l) => s.length <= l ? (s + " ".repeat(l - s.length)) 
+                                           : s.slice(0, l - 3) + "...";
+
+/** @param {Date} due */
+const dueString = (due, lateDue) => {
+    if (!(due instanceof Date)) return "";
+    let delta = due - new Date();
+    if (delta > 0) {
+        if (delta > 24 * 60 * 60 * 1000) {
+            if (delta < 3 * 24 * 60 * 60 * 1000) {
+                return chalk.yellowBright(`Due in ` + 
+                    `${(delta / (24 * 60 * 60 * 1000)).toFixed(0)} days ` +
+                    `${(delta % (60 * 60 * 1000))} hours`);
+            } else {
+                return chalk.greenBright(`Due in ` + 
+                    `${(delta / (24 * 60 * 60 * 1000)).toFixed(0)} days`);
+            }
+        } else if (delta > 60 * 60 * 1000) {
+            if (delta < 3* 60 * 60 * 1000) {
+                return chalk.keyword("orange")(`Due in ` +
+                    `${(delta / (60 * 60 * 1000)).toFixed(0)} hours ` +
+                    `${(delta % (60 * 1000).toFixed(0))} minutes`);
+            } else {
+                return chalk.keyword("orange")(`Due in ` +
+                    `${(delta / (60 * 60 * 1000)).toFixed(0)} hours`);
+            }
+        } else if (delta > 60 * 1000) {
+            return chalk.redBright(`Due in ` +
+                    `${(delta / (60 * 1000)).toFixed(0)} minutes`);
+        } else {
+            return chalk.red(`Due in less than a minute`);
+        }
+    } else if (!(lateDue instanceof Date)) {
+        return chalk.yellow("Already Due");
+    } else {
+        if (lateDue > new Date()) {
+            return chalk.redBright("LATE ") + dueString(lateDue);
+        } else return chalk.yellow("LATE Already Due");
+    }
+}
+
+/** @param {Homework} hw */
+const formatHwAsRow = hw => {
+    return  `${fillString(hw.name||"", 12)}│` + 
+            `${fillString(hw.score||hw.status||"", 14)}│` + 
+            `${fillString(dueString(hw.due, hw.lateDue)||"", 40)}│`;
+}
+
+let loggedIn = false;
+const login = async () => {
+
+    let needToBreach = !token;
+
+    if (needToBreach) logger.log("Breaching UC Berkeley Firewall");
+
+    while (!token) token = await loginWithCredentials();
+
+    let failed = await updateCourses();
+
+    while(failed) {
+        token = await loginWithCredentials();
+        failed = await updateCourses();
+    }
+
+    loggedIn = true;
+    currentLevel = "menu";
+    console.clear();
 }
 
 let loggingOut = false;
@@ -285,9 +558,16 @@ const logout = async () => {
     rainbowDots();
     let { res } = await APICall("/logout")
                             .catch(e => crash(e));
-    clearRainbow();
-    if (res.statusCode !== 302) {
+    clearRainbow(true);
+
+    if (res.statusCode === 302) {
+
+        token = null;
+        loggedIn = false;
+        currentLevel = "start";
+        fs.unlinkSync(__dirname + "/token.txt");
         logger.log(`Successfully Erased Hacking Record`);
+
     } else {
         logger.warn(`Failed to Erased Hacking Record: Status[${
             res.statusCode}]:${res.statusMessage}`);
@@ -298,9 +578,8 @@ const crash = e => {
     logger.error(e);
     logger.exit(`Bitconnect Generator Has Crashed. ` + 
                 `Please report issue at ${chalk.yellowBright(
-                    "https://github.com/Yuu6883/GradeScopeCLI/issues")} ` + 
-                    `to improve your experience with this CLI`);
-    process.exit(0);
+                    "https://github.com/Yuu6883/GradeScopeCLI/issues")}`);
+    process.exit(1);
 }
 
 const quit = async () => {
@@ -312,26 +591,12 @@ const quit = async () => {
 
 (async() => {
 
-    logger.log("Breaching UC Berkeley Firewall");
+    console.clear();
 
-    let needToBreach = !token;
-    while (!token) token = await loginWithCredentials();
+    await term.drawImage(__dirname + "/icon.png");
 
-    logger.log(needToBreach ? "Firewall Breached" : "Backdoor Connected");
+    while(true) await promptAction();
 
-    let failed = await updateCourses();
-
-    while(failed) {
-        token = await loginWithCredentials();
-        failed = await updateCourses();
-    }
-    
-    while (true) {
-        let input = await ask("> ");
-        if (input === "ls") {
-            listCourses();
-        }
-    }
 })();
 
 process.on("SIGINT", quit);

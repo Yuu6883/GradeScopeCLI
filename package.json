@@ -19,6 +19,9 @@
     "url": "https://github.com/Yuu6883/GradeScopeCLI/issues"
   },
   "homepage": "https://github.com/Yuu6883/GradeScopeCLI#readme",
+  "bin": {
+    "gradescope": "index.js"
+  },
   "dependencies": {
     "chalk": "^2.4.2",
     "cookie": "^0.4.0",

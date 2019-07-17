@@ -440,7 +440,7 @@ const promptAction = async () => {
             break;
 
         case "Log Out":
-            await logout();
+            await logout(true);
             break;
 
         case "Quit":
@@ -553,8 +553,8 @@ const login = async () => {
 }
 
 let loggingOut = false;
-const logout = async () => {
-    if (rememberMe || !token || loggingOut) return;
+const logout = async (force) => {
+    if (!force && (rememberMe || !token || loggingOut)) return;
     loggingOut = true;
     logger.log("Erasing Hacking Record");
     rainbowDots();

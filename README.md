@@ -4,10 +4,8 @@ CLI for GradeScope.com (A site used for submitting and grading homework)
 
 # Installation
 ```
-git clone https://github.com/Yuu6883/GradeScopeCLI.git
-npm i
+npm install -g gradescope-cli
 ```
-npm package coming soon... (possibly `npm i -g gradescope-cli`)
 
 # Security
 ### This package doesn't use any virtual browser library and all networking is done with built-in https module. 

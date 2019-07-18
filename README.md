@@ -7,6 +7,11 @@ CLI for GradeScope.com (A site used for submitting and grading homework)
 npm install -g gradescope-cli
 ```
 
+# Usage
+```
+gradescope
+```
+
 # Security
 ### This package doesn't use any virtual browser library and all networking is done with built-in https module. 
 ### The package **doesn't** store your credentials anywhere (only used when exchanging for access token), but it **does** store your access token to gradescope locally (package_dir/token.txt) **only if you choose "Remember Me"** option when login.

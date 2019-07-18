@@ -159,17 +159,26 @@ const APICall = (path, method, form) => new Promise((resolve, reject) => {
                         .join(";"))._gradescope_session || session;
         }
 
-        let unzip = createGunzip();
-        res.pipe(unzip);
-            
-        unzip
-            .on("data", chunk => {
-                buffers.push(chunk.toString());
-            })
-            .on("end", () => {
-                resolve({ res, body: buffers.join("") });
-            })
-            .on("error", reject);
+        if (res.headers["content-encoding"] === "gzip") {   
+            res.pipe(createGunzip()
+                .on("data", chunk => {
+                    buffers.push(chunk.toString());
+                })
+                .on("end", () => {
+                    resolve({ res, body: buffers.join("") });
+                })
+                .on("error", reject));
+        } else {
+            res.on("data", chunk => {
+                    buffers.push(chunk);
+                })
+                .on("end", () => {
+                    resolve({ res, body: buffers.join("") });
+                })
+                .on("error", reject);
+        }
+
+        
     });
 
     req.on('error', err => {

@@ -73,6 +73,13 @@ const dueString = (due, lateDue) => {
         } else return chalk.yellow("LATE Already Due");
     }
 }
+const toRow = (...args) => {
+    let line = chalk.whiteBright("┃");
+    return line + args.join(line) + line;
+}
+
+const splitStirng = (string, size) => string.replace(/\n/g, "")
+                                            .match(new RegExp(`.{1,${size}}`, "g"));
 
 class GradeScope extends EventEmitter {
 
@@ -94,9 +101,9 @@ class GradeScope extends EventEmitter {
         this.currentHomework;
         /** @type {Homework[]} */
         this.homeworkList = [];
-        /** @type {String} */
+        /** @type {String[]} */
         this.passed = [];
-        /** @type {String} */
+        /** @type {String[]} */
         this.failed = [];
         this.init();
     }
@@ -359,8 +366,7 @@ class GradeScope extends EventEmitter {
 
         } else if (!body) {
     
-            this.emit("warn", "Failed to Fetch Course Data: it looks like " + 
-                              "Berkeley detected last backdoor, need to log-in again.");
+            this.emit("warn", "Failed to Fetch Course");
             return false;
         } else {
             let courses = [];
@@ -402,7 +408,7 @@ class GradeScope extends EventEmitter {
         let year = ~~(/20\d{2}/.exec(course.term)[0]);
         if (!year) year = new Date().getFullYear();
 
-        this.emit("req", `Fetching ${course.name} Course Data`);
+        this.emit("req", `Fetching ${course.name}`);
         let { res, body } = await this.apiCall(course.path);
 
         if (res.statusCode !== 200) {
@@ -411,7 +417,7 @@ class GradeScope extends EventEmitter {
             return false;
         } else if (!body) {
     
-            this.emit("warn", "Failed to Fetch Course Data");
+            this.emit("warn", `Failed to Fetch Course ${course.name}`);
             return false;
             
         } else {
@@ -484,7 +490,7 @@ class GradeScope extends EventEmitter {
     /** @param {Homework} hw */
     async fetchHomework(hw) {
     
-        this.emit("req", `Fetching ${this.currentCourse.name} ${hw.name} Data`);
+        this.emit("req", `Fetching ${this.currentCourse.name} ${hw.name}`);
 
         let { res, body } = await this.apiCall(hw.href);
     
@@ -494,7 +500,7 @@ class GradeScope extends EventEmitter {
             return false;
         } else if (!body) {
     
-            this.emit("warn", "Failed to Fetch Homework Data");
+            this.emit("warn", `Failed to Fetch Homework ${this.currentHomework.name}`);
             return false;
         } else {
             
@@ -516,14 +522,10 @@ class GradeScope extends EventEmitter {
 
     /** @param {Homework} hw */
     formatHwAsRow(hw) {
-        return  `${chalk.whiteBright("┃")}` + 
-                `${fillString(hw.name||"", 12)}` + 
-                `${chalk.whiteBright("┃")}` + 
-                `${fillString(hw.score||hw.status||"", 14)}` + 
-                `${chalk.whiteBright("┃")}` + 
-                `${fillString(dueString(hw.due, hw.lateDue).trim() ||
-                                        chalk.green("  "), 40)}` +
-                `${chalk.whiteBright("┃")}`;
+        return toRow(fillString(hw.name||"", 12), 
+                     fillString(hw.score||hw.status||"", 14),
+                     fillString(dueString(hw.due, hw.lateDue).trim() ||
+                                chalk.green("  "), 40));
     }
 
     tableTop(...args) {
@@ -536,6 +538,19 @@ class GradeScope extends EventEmitter {
 
     tableBottom(...args) {
         return "┗" + args.map(n => "━".repeat(n)).join("┻") + "┛";
+    }
+
+    getQuestionTable(width) {
+        let list = [];
+        this.failed.forEach(failString => {
+            list.push(splitStirng(failString, width - 2)
+                                .map(s => toRow(chalk.redBright(fillString(s, width)))).join("\n  "));
+        });
+        this.passed.forEach(passString => {
+            list.push(splitStirng(passString, width - 2)
+                                .map(s => toRow(chalk.greenBright(fillString(s, width)))).join("\n  "));
+        });
+        return list;
     }
 
     get needToLogin() {

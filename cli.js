@@ -57,10 +57,17 @@ let handlers = {
                                                 }, []),
                             new inquirer.Separator(chalk.whiteBright(GS.tableBottom(12, 14, 30))), "Back"], 
             message: `${GS.currentCourse.name}: ${GS.currentCourse.fullName}`}),
-    "question": () => ({ choices: [...GS.failed.map(s => chalk.redBright(s)), 
-                            ...GS.passed.map(s => chalk.greenBright(s)),
-                            ...BACK_SEP()],
-                  message: `${GS.currentHomework.name}`}),
+    "question": () => ({ choices: [new inquirer.Separator(chalk.whiteBright(GS.tableTop(term.width - 6))),
+                                   ...GS.getQuestionTable(term.width - 6).reduce((prev, curr) => {
+                                       if (prev.length) prev.push(
+                                            new inquirer.Separator(chalk.whiteBright(GS.tableMiddle(term.width - 6)))
+                                       );
+                                       prev.push(curr);
+                                       return prev;
+                                   }, []),
+                                   new inquirer.Separator(chalk.whiteBright(GS.tableBottom(term.width - 6))),
+                                   "Back"],
+                  message: `${GS.currentHomework.name} (${GS.currentHomework.score || GS.currentHomework.status})`}),
     "default": () => ({ choices:["Quit"], message:"" }),
 }
 
@@ -124,8 +131,7 @@ const promptAction = async () => {
         prefix: ""
     });
 
-    readline.moveCursor(process.stdout, 0, -1);
-    readline.clearLine(process.stdout);
+    eraseLines(1);
 
     /** @type {Command} */
     let nextCommand;

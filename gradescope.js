@@ -1,8 +1,8 @@
 const https = require("https");
 const qs = require("querystring");
 const Cookie = require("cookie");
-const chalk = require("chalk").default;
 const { createGunzip } = require("zlib");
+const chalk = require("chalk").default;
 
 const { JSDOM } = require("jsdom");
 const { window } = new JSDOM();
@@ -14,76 +14,13 @@ const $ = require("jquery")(window);
 const fs = require("fs");
 const { EventEmitter } = require("events");
 
-/** @typedef {{term:String,hw:String,name:String,fullName:String,path:String}} Course */
-/** @typedef {{href:String,name:String,score:String,status:String,release:Date,due:Date,lateDue:Date}} Homework */
-
-// Regex or constants for parsing
-const AUTH_TOKEN_REGEX = /input type="hidden" name="authenticity_token" value="[0-9a-z\/A-Z+=]*"/;
-const MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
-const MONTH_REGEX = /^[A-Z]{3} \d{2}$/i;
-const TIME_REGEX = /[A-Z]{3} \d{2} AT ( |\d)\d:\d{2}(A|P)M$/i;
-
-const parseDue = (year, due) => {
-    let string = TIME_REGEX.exec(due)[0];
-    let month = MONTHS.indexOf(string.slice(0, 3).toUpperCase());
-    let date = ~~string.slice(4, 6);
-    let hours = ~~string.slice(-7, -5) + 
-                 (string.slice(-2, -1) === "P" ? 12 : 0);
-    let minutes = ~~string.slice(-4, -2);
-    return new Date(year, month, date, hours, minutes);
-}
-
-const fillString = (s, l) => (s.length <= l) ? (s + " ".repeat(l - s.length)) 
-                                             : s.slice(0, l - 3) + "...";
-
-/** @param {Date} due */
-const dueString = (due, lateDue) => {
-    if (!(due instanceof Date)) return "";
-    let delta = due - new Date();
-    if (delta > 0) {
-        if (delta > 24 * 60 * 60 * 1000) {
-            if (delta < 3 * 24 * 60 * 60 * 1000) {
-                return chalk.yellowBright(`Due in ` + 
-                    `${(delta / (24 * 60 * 60 * 1000)).toFixed(0)} days ` +
-                    `${(delta % (60 * 60 * 1000))} hours`);
-            } else {
-                return chalk.greenBright(`Due in ` + 
-                    `${(delta / (24 * 60 * 60 * 1000)).toFixed(0)} days`);
-            }
-        } else if (delta > 60 * 60 * 1000) {
-            if (delta < 3* 60 * 60 * 1000) {
-                return chalk.keyword("orange")(`Due in ` +
-                    `${(delta / (60 * 60 * 1000)).toFixed(0)} hours ` +
-                    `${(delta % (60 * 1000).toFixed(0))} minutes`);
-            } else {
-                return chalk.keyword("orange")(`Due in ` +
-                    `${(delta / (60 * 60 * 1000)).toFixed(0)} hours`);
-            }
-        } else if (delta > 60 * 1000) {
-            return chalk.redBright(`Due in ` +
-                    `${(delta / (60 * 1000)).toFixed(0)} minutes`);
-        } else {
-            return chalk.red(`Due in less than a minute`);
-        }
-    } else if (!(lateDue instanceof Date)) {
-        return chalk.yellow("Already Due");
-    } else {
-        if (lateDue > new Date()) {
-            return chalk.redBright("LATE ") + dueString(lateDue);
-        } else return chalk.yellow("LATE Already Due");
-    }
-}
-const toRow = (...args) => {
-    let line = chalk.whiteBright("┃");
-    return line + args.join(line) + line;
-}
-
-const splitStirng = (string, size) => string.replace(/\n/g, "")
-                                            .match(new RegExp(`.{1,${size}}`, "g"));
+const Course = require("./course");
+const Assignment = require("./assignment");
 
 class GradeScope extends EventEmitter {
 
     constructor() {
+
         super();
 
         this.authToken = "";
@@ -92,34 +29,61 @@ class GradeScope extends EventEmitter {
         this.rememberMe = false;
         this.loggingOut = false;
 
-        /** @type {Course[]} */
-        this.courses = [];
-        this.currentTerm = "";
-        /** @type {Course} */
-        this.currentCourse;
-        /** @type {Homework} */
-        this.currentHomework;
-        /** @type {Homework[]} */
-        this.homeworkList = [];
-        /** @type {String[]} */
-        this.passed = [];
-        /** @type {String[]} */
-        this.failed = [];
+        this.tokenPath = __dirname + "/token.txt";
+        this.cachePath = __dirname + "/cache.json";
+
+        /** @type {{courses:Course[]}} */
+        this.cache = JSON.parse(fs.readFileSync(this.cachePath));
+        this.cache.courses = this.cache.courses || [];
+
+        this.cacheLimitMB = 10;
+        this.nocache = false;
+
+        this.ignoreWarning = false;
+
+        this.loadConfig();
         this.init();
     }
 
+    loadConfig(){
+
+    }
+
+    setConfig(config) {
+
+    }
+
     init() {
-        if (fs.existsSync(__dirname + "/token.txt")) {
-            this.token = fs.readFileSync(__dirname + "/token.txt", "utf-8");
+        if (fs.existsSync(this.tokenPath)) {
+            this.token = fs.readFileSync(this.tokenPath, "utf-8");
             this.rememberMe = true;
         }
+        if (!this.ignoreWarning) {
+            this.on("warning", message => console.log(
+                `[${chalk.yellowBright("Warning")}] ${message}`));
+        }  
     }
 
     saveToken() {
         if (this.token) {
-            fs.writeFileSync(__dirname + "/token.txt", this.token, "utf-8");
+            fs.writeFileSync(this.tokenPath, this.token, "utf-8");
             this.emit("success", "Token Saved");
         }
+    }
+
+    saveCache() {
+        if (fs.statSync(this.cachePath).size / 1000000.0 < this.cacheLimitMB) {
+            fs.writeFileSync(this.cachePath, JSON.stringify(this.cache));
+        } else {
+            this.emit("warn", `Not enough space for cache. Current limit is ` + 
+                                `${this.cacheLimitMB.toFixed(2)}MB`);
+        }
+    }
+
+    clearCache(field) {
+        if (!field || !this.cache[field]) this.cache = {};
+        else delete this.cache[field];
+        this.saveCache();
     }
 
     /** headers wrapper */
@@ -225,11 +189,12 @@ class GradeScope extends EventEmitter {
 
     /** 
      * Send request to gradescope with specific path, method, and payload
+     * @param {Boolean} cache
      * @param {"GET"|"POST"|"DELETE"|"PUT"} method 
      * @returns {Promise.<{res:Response,body:String}>}
      */
     async apiCall(path, method, form) {
-        
+
         method = (method || "GET").toUpperCase();
 
         if (!(["GET", "POST", "PUT", "DELETE"].includes(method))) {
@@ -259,28 +224,31 @@ class GradeScope extends EventEmitter {
                 let buffers = [];
                 this.saveSession(req, res);
                 this.emit("res");
+
+                const end = () => resolve({ res, body: buffers.join("") });
+
+                const error = e => this.emit("error", e);
         
                 if (res.headers["content-encoding"] === "gzip") {   
                     res.pipe(createGunzip()
                         .on("data", chunk => {
                             buffers.push(chunk.toString());
                         })
-                        .on("end", () => {
-                            resolve({ res, body: buffers.join("") });
-                        })
-                        .on("error", e => this.emit("error", e)));
+                        .on("end", end)
+                        .on("error", error));
                 } else {
                     res.on("data", chunk => {
                             buffers.push(chunk);
                         })
-                        .on("end", () => {
-                            resolve({ res, body: buffers.join("") });
-                        })
-                        .on("error", e => this.emit("error", e));
+                        .on("end", end)
+                        .on("error", error);
                 }
             });
         
-            req.on('error', e => this.emit("error", e));
+            req.on('error', e => {
+                this.emit("error", e);
+                resolve();
+            });
         
             if (formData) req.write(formData);
             req.end();
@@ -338,7 +306,8 @@ class GradeScope extends EventEmitter {
         if (res.statusCode === 302) {
     
             this.token = null;
-            fs.unlinkSync(__dirname + "/token.txt");
+            fs.unlinkSync(this.tokenPath);
+            this.clearCache();
             this.emit("success", `Successfully Erased Hacking Record`);
             return true;
     
@@ -349,11 +318,12 @@ class GradeScope extends EventEmitter {
         }
     }
     
+    /**
+     * Fetch all courses (from API or cache)
+     * @param {Boolean} force bypass cache
+     * @returns {{courses: Course[], info: { name:String, email:String }, timestamp: Date}} courses and info
+     */
     async fetchAllCourses(force) {
-
-        if (force !== true && this.courses.length) {
-            return this.courses;
-        }
 
         this.emit("req", "Fetching All Courses");
 
@@ -362,12 +332,13 @@ class GradeScope extends EventEmitter {
         if (res.statusCode !== 200) {
             this.emit("error", `Failed to Fetch Courses: Status[` + 
                                `${res.statusCode}]:${res.statusMessage}`);
-            return false;
+            return;
 
         } else if (!body) {
     
             this.emit("warn", "Failed to Fetch Course");
-            return false;
+            return;
+
         } else {
             let courses = [];
             
@@ -376,13 +347,11 @@ class GradeScope extends EventEmitter {
                 $(this).next().find("a").each(function() {
                     let path = this.href;
                     let name = $(this).find(".courseBox--shortname").text();
-                    let hw = ~~$(this).find(".courseBox--assignments").text().split(" ")[0];
+                    let hwCount = ~~$(this).find(".courseBox--assignments").text().split(" ")[0];
                     let fullName = $(this).find(".courseBox--name").text();
-                    courses.push({ term, name, hw, fullName, path });
+                    courses.push(new Course(term, name, hwCount, fullName, path));
                });
             });
-
-            this.courses = courses;
     
             let infoMatch= /Bugsnag.user = {name: ".+", email: ".+"}/.exec(body);
             let info = {};
@@ -393,17 +362,24 @@ class GradeScope extends EventEmitter {
                                                 .replace("email", "\"email\""));
                 } catch (e) { this.emit("error", e) }
             }
-            if (info.name) {
-                let lastName = info.name.split(" ").slice(-1)[0];
-                this.emit("success", `Welcome Back, ${lastName}`);
+
+            return {
+                courses, info, timestamp: new Date()
             }
-    
-            return true;
         }
     }
 
-    /** @param {Course} course */
-    async fetchOneCourse(course) {
+    /** 
+     * Fetch a specific course
+     * @param {Course} course 
+     * @param {Boolean} force bypass cache
+     */
+    async fetchOneCourse(course, force) {
+
+        if (!(course instanceof Course)) {
+            this.emit("warn", "Not a Course instance passed to GradeScope");
+            return false;
+        }
 
         let year = ~~(/20\d{2}/.exec(course.term)[0]);
         if (!year) year = new Date().getFullYear();
@@ -421,13 +397,11 @@ class GradeScope extends EventEmitter {
             return false;
             
         } else {
-            this.currentCourse = course;
-            this.homeworkList = [];
-            let homeworkList = this.homeworkList;
+            course.assignments = [];
 
             $(body).find("tbody").children().each(function() {
     
-                let [href, name, score, status, release, due, lateDue] = 
+                let [path, name, score, status, release, due, lateDue] = 
                     $(this).children().map(function(index) {
                         if (!index) return [$(this).find("a").attr("href"),
                                             $(this).text().trim()];
@@ -477,93 +451,72 @@ class GradeScope extends EventEmitter {
                         lateDue = null;
                     }
                 }
-                
-                homeworkList.push({ href, name, score, status, release, due, lateDue });
+                course.lastUpdate = new Date();
+                course.assignments.push(new Assignment(course.name, name, path, score, status, 
+                                                       release, due, lateDue));
             });
     
-            homeworkList.sort((a, b) => (b.due || 0) - (a.due || 0));
-    
+            course.assignments.sort((a, b) => (b.due || 0) - (a.due || 0));
             return true;
         }
     }
 
-    /** @param {Homework} hw */
-    async fetchHomework(hw) {
+    /** 
+     * @param {Assignment} hw 
+     * @param {Boolean} force bypass cache
+     */
+    async fetchAssignment(hw, force) {
     
-        this.emit("req", `Fetching ${this.currentCourse.name} ${hw.name}`);
+        this.emit("req", `Fetching ${hw.courseName} ${hw.name}`);
 
-        let { res, body } = await this.apiCall(hw.href);
+        let { res, body } = await this.apiCall(hw.path);
     
         if (res.statusCode !== 200) {
-            this.emit("warn", `Failed to Fetch Homework: Status[` + 
+            this.emit("warn", `Failed to Fetch Assignment: Status[` + 
                     `${res.statusCode}]:${res.statusMessage}`);
             return false;
         } else if (!body) {
     
-            this.emit("warn", `Failed to Fetch Homework ${this.currentHomework.name}`);
+            this.emit("warn", `Failed to Fetch Assignment ${this.currentHomework.name}`);
             return false;
         } else {
             
-            this.currentHomework = hw;
-    
-            this.passed = $(body).find(".test-case.passed")
+            let passed = $(body).find(".test-case.passed")
                             .map(function(){ return this.textContent }).toArray();
     
-            this.failed = $(body).find(".test-case.failed")
+            let failed = $(body).find(".test-case.failed")
                             .map(function(){ return this.textContent }).toArray();
     
+            hw.lasteUpdate = new Date();
+            hw.passed = passed;
+            hw.failed = failed;
             return true;
         }
-    }
-
-    getTerms() {
-        return [...new Set(this.courses.map(c => c.term))];
-    }
-
-    /** @param {Homework} hw */
-    formatHwAsRow(hw) {
-        return toRow(fillString(hw.name||"", 12), 
-                     fillString(hw.score||hw.status||"", 14),
-                     fillString(dueString(hw.due, hw.lateDue).trim() ||
-                                chalk.green("  "), 40));
-    }
-
-    tableTop(...args) {
-        return "┏" + args.map(n => "━".repeat(n)).join("┳") + "┓";
-    }
-
-    tableMiddle(...args) {
-        return "┣" + args.map(n => "━".repeat(n)).join("╋") + "┫";
-    }
-
-    tableBottom(...args) {
-        return "┗" + args.map(n => "━".repeat(n)).join("┻") + "┛";
-    }
-
-    getQuestionTable(width) {
-        let list = [];
-        this.failed.forEach(failString => {
-            list.push(splitStirng(failString, width - 2)
-                                .map(s => toRow(chalk.redBright(fillString(s, width)))).join("\n  "));
-        });
-        this.passed.forEach(passString => {
-            list.push(splitStirng(passString, width - 2)
-                                .map(s => toRow(chalk.greenBright(fillString(s, width)))).join("\n  "));
-        });
-        return list;
     }
 
     get needToLogin() {
         return !this.token;
     }
 
-    get termCourses() {
-        return this.courses.filter(c => c.term == this.currentTerm);
+    notif(message) {
+        this.emit("notif", { message, timestamp: new Date() });
     }
+}
 
-    createNewInstance() {
-        return new GradeScope();
-    }
+// Regex or constants for parsing
+const AUTH_TOKEN_REGEX = /input type="hidden" name="authenticity_token" value="[0-9a-z\/A-Z+=]*"/;
+const MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+const MONTH_REGEX = /^[A-Z]{3} \d{2}$/i;
+const TIME_REGEX = /[A-Z]{3} \d{2} AT ( |\d)\d:\d{2}(A|P)M$/i;
+
+const parseDue = (year, due) => {
+    let string = TIME_REGEX.exec(due)[0];
+    let month = MONTHS.indexOf(string.slice(0, 3).toUpperCase());
+    let date = ~~string.slice(4, 6);
+    let hours = ~~string.slice(-7, -5) + 
+                 (string.slice(-2, -1) === "P" ? 12 : 0);
+    let minutes = ~~string.slice(-4, -2);
+    return new Date(year, month, date, hours, minutes);
 }
 
 module.exports = new GradeScope();

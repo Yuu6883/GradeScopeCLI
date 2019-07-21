@@ -7,9 +7,12 @@ const readline = require("readline");
 
 const Rainbow = require("./rainbow");
 const GS = require("./gradescope");
+const Table = require("./table");
+const Nav = require("./cli-nav");
+const { timeString } = require("./time");
 
-const SEP = () => new inquirer.Separator(chalk.blueBright("━━━━━━━━━━━━━━━━━━━━━━━"));
-const BACK_SEP = () => [SEP(), "Back", SEP()];
+const Course = require("./course");
+const Assignment = require("./assignment");
 
 GS.on("success", message => {
     Rainbow.stop();
@@ -23,92 +26,119 @@ GS.on("req", message => {
 
 GS.on("res", () => Rainbow.stop());
 
-GS.on("warning", message => console.log(
-    `[${chalk.yellowBright("Warning")}] ${message}`));
-
 GS.on("error", error => {
     Rainbow.stop();
     crash(error);
 });
+
+const LONG = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+const SEP = () => new inquirer.Separator(chalk.cyanBright(LONG));
+const LIST = arr => [SEP(), ...arr, SEP(), "Back", SEP()];
+const RE = arr => [SEP(), ...arr, SEP(), "Refresh", "Back", "Quit", SEP()];
 
 /** @typedef {"start"|"term"|"course"|"hw"|"menu"|"question"} Command */
 /** @type {Command[]} */
 let commands = [];
 
 /** @type {Object.<string,{choices:String[],message:String}>}*/
-let handlers = {
-    "start": () => ({ choices: ["Log In", "Quit"], message: "Menu" }),
-    "menu": () => ({ choices:["View Courses", SEP(), "Log Out", "Quit"], 
-              message: "Menu" }),
-    "term": () => ({ choices: [SEP(), ...GS.getTerms(), ...BACK_SEP()], 
-              message: "Choose a Term: " }),
+const handlers = {
+    "start": () => [["Log In", "Quit"], "Menu"],
+    "menu": () => [[SEP(), Nav.viewCourses, SEP(), "Log Out", "Quit", SEP()], 
+                    `Menu ${chalk.gray(" (Updated " + timeString(Nav.lastUpdate) + ")")}`],
+    "term": () => [LIST(Nav.terms), "Choose a Term: "],
+    "course": () => [RE(Nav.termCourses), `${Nav.currentTerm} Courses: `],
 
-    "course": () => ({ choices: [SEP(), ...GS.termCourses.map(c => c.name), ...BACK_SEP()],
-                message: `${GS.currentTerm} Courses: ` }),
-    "hw": () => ({ choices: [new inquirer.Separator(chalk.whiteBright(GS.tableTop(12, 14, 30))),
-                            ...GS.homeworkList.map(h => ({ name: GS.formatHwAsRow(h), 
-                                                    value: h,
-                                                }))
-                                                .reduce((prev, curr) => {
-                                                    prev.length ? prev.push(new inquirer.Separator(
-                                                                                chalk.whiteBright(GS.tableMiddle(12, 14, 30))), curr)
-                                                                : prev.push(curr);
-                                                    return prev;
-                                                }, []),
-                            new inquirer.Separator(chalk.whiteBright(GS.tableBottom(12, 14, 30))), "Back"], 
-            message: `${GS.currentCourse.name}: ${GS.currentCourse.fullName}`}),
-    "question": () => ({ choices: [new inquirer.Separator(chalk.whiteBright(GS.tableTop(term.width - 6))),
-                                   ...GS.getQuestionTable(term.width - 6).reduce((prev, curr) => {
-                                       if (prev.length) prev.push(
-                                            new inquirer.Separator(chalk.whiteBright(GS.tableMiddle(term.width - 6)))
-                                       );
-                                       prev.push(curr);
-                                       return prev;
-                                   }, []),
-                                   new inquirer.Separator(chalk.whiteBright(GS.tableBottom(term.width - 6))),
-                                   "Back"],
-                  message: `${GS.currentHomework.name} (${GS.currentHomework.score || GS.currentHomework.status})`}),
-    "default": () => ({ choices:["Quit"], message:"" }),
+    "hw": () => [Table.chooseHw(Nav.hwList),
+                `${chalk.magentaBright(Nav.currCourse.name + ": " + Nav.currCourse.fullName)}  ` + 
+                `${chalk.gray(" (Updated " + timeString(Nav.currCourse.lastUpdate) + ")")}`],
+
+    "question": () => [Table.chooseQuestion([Nav.currHw.failed, Nav.currHw.passed], 
+                                [chalk.redBright, chalk.greenBright]),
+                        chalk.magentaBright(Nav.currHw.courseName + " " + 
+                            Nav.currHw.name + " " + 
+                            (Nav.currHw.score || Nav.currHw.status))],
+
+    "default": () => [["Quit"], ""],
 }
 
 /** @type {Object.<string, Function} */
 const actions = {
     "Log In": async () => {
+
         if (GS.needToLogin) {
             let { email, password, rememberMe } = await promptCredentials();
             eraseLines(3);
             let success = await GS.loginWithCredentials(email, password, rememberMe);
             if (!success) return "start";
         }
-        if (await GS.fetchAllCourses(true)) return "menu";
+
+        let result = await GS.fetchAllCourses();
+        if (result.courses) {
+            Nav.courses = result.courses;
+            Nav.lastUpdate = result.timestamp || Nav.lastUpdate;
+            console.log(chalk.greenBright(`Welcome Back, ` + 
+                        `${result.info.name.split(" ").slice(-1)[0]}`));
+            return "menu";
+        }
+        return "start";
     },
     "Log Out": async () => (await GS.logout(true)) && "start",
     "Quit": () => quit(),
     "View Courses": () => "term",
+    /** @param {Command} commandString */
+    "Refresh": async commandString => {
+        switch(commandString) {
+            case "course":
+                let r1 = await GS.fetchAllCourses(true);
+                if (r1.courses) {
+                    Nav.lastUpdate = r1.timestamp;
+                    Nav.courses = r1.courses;
+                    console.log(chalk.greenBright(`Courses Refreshed`));
+                }
+                break;
+            case "hw":
+                await GS.fetchOneCourse(Nav.currCourse, true);
+                break;
+            case "question":
+                await GS.fetchAssignment(arg, true);
+                break;
+        }
+        return commandString;
+    },
     "Back": () => {},
 };
 
-/** @type {Object.<string, Function} */
+/** @type {Object.<string, Function>} */
 const specialActions = {
+
     "term": async arg => {
-        GS.currentTerm = arg;
+
+        Nav.currentTerm = arg;
         return "course";
+
     },
+
     "course": async arg => {
-        let course = GS.courses.find(c => c.name == arg);
-        if (!course) {
-            crash(`Can't find course ${arg}`);
+
+        if (!(arg instanceof Course)) {
+            await showInfo(`${arg} has no further information`);
             return "course";
         } else {
-            return (await GS.fetchOneCourse(course)) && "hw";
+            Nav.currCourse = arg;
+            Nav.hwList = await GS.fetchOneCourse(arg);
+            return Nav.hwList ? "hw" : "course";
         }
+
     },
+
     "hw": async arg => {
-        if (arg.href) {
-            return (await GS.fetchHomework(arg)) && "question";
-        } else {
-            await promptInfo(arg.name);
+
+        if (!(arg instanceof Assignment) || !arg.path) {
+            await showInfo(`${arg.name || arg} has no further information`);
             return "hw";
+        } else {
+            Nav.currHw = arg;
+            return (await GS.fetchAssignment(arg)) ? "question" : "hw";
         }
     }
 }
@@ -122,7 +152,7 @@ const promptAction = async () => {
 
     let commandString = commands.pop() || "start";
 
-    let { choices, message } = (handlers[commandString] || handlers["default"])();
+    let [choices, message] = (handlers[commandString] || handlers["default"])();
 
     let { result } = await inquirer.prompt({
         type: "list",
@@ -136,7 +166,7 @@ const promptAction = async () => {
     /** @type {Command} */
     let nextCommand;
     if ((typeof result === "string") && actions[result]) {
-        nextCommand = await actions[result]();
+        nextCommand = await actions[result](commandString);
     } else {
         nextCommand = await specialActions[commandString](result);
     }
@@ -172,12 +202,12 @@ const promptCredentials = () => inquirer.prompt([
     }
 ]);
 
-const promptInfo = info => inquirer.prompt([
+const showInfo = info => inquirer.prompt([
     {
         name: "F",
         prefix: "",
         type: "list",
-        message: `${info} has no further information`,
+        message: info,
         choices: ["Ok..."]
     }
 ]);
@@ -192,7 +222,6 @@ const crash = e => {
 
 const quit = async () => {
     await GS.logout();
-    // console.clear();
     console.log(chalk.magentaBright("Bye"));
     process.exit(0);
 }
@@ -202,6 +231,11 @@ const quit = async () => {
     console.clear();
 
     await term.drawImage(__dirname + "/icon.png");
+
+    if (!GS.needToLogin) {
+        await actions["Log In"]();
+        commands.push("menu");
+    }
 
     while(true) await promptAction();
 

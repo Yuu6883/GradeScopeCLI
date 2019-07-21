@@ -1,5 +1,5 @@
 # GradeScopeCLI
-CLI for GradeScope.com (A site used for submitting and grading homework)
+CLI for GradeScope.com (A site used for submitting and grading Assignment)
 ![](https://i.imgur.com/9nSiQrO.gif)
 
 # Installation
@@ -18,6 +18,6 @@ gradescope
 
 # Todo
 * ~~Log In and Out (handle session & cookies)~~
-* ~~View courses and homework~~
+* ~~View courses and Assignment~~
 * Submit files through CLI file system browsing
-* Notification system (new homework/grades posted)
+* Notification system (new Assignment/grades posted)

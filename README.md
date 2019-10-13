@@ -2,6 +2,9 @@
 CLI for GradeScope.com (A site used for submitting and grading Assignment)
 ![](https://github.com/Yuu6883/GradeScopeCLI/blob/master/img/start.PNG?raw=true)
 
+# Demo
+![](https://media.giphy.com/media/S5JphkJuibU79UPhTR/giphy.gif)
+
 # Installation
 ```
 npm install -g gradescope-cli

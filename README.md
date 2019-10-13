@@ -1,6 +1,6 @@
 # GradeScopeCLI
 CLI for GradeScope.com (A site used for submitting and grading Assignment)
-![](https://i.imgur.com/9nSiQrO.gif)
+![](https://github.com/Yuu6883/GradeScopeCLI/blob/master/img/start.PNG?raw=true)
 
 # Installation
 ```
